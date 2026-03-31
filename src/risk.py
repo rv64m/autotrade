@@ -1,25 +1,26 @@
 """
-Risk management gate for autotrade experiments.
+Risk control gate for autotrade experiments.
 
-Two levels of enforcement:
-
-  Hard (pre-run):
-    check_leverage_hard() — raises ValueError if MAX_LEVERAGE exceeds
-    MAX_LEVERAGE_LIMIT. The Agent must fix train.py before re-running.
-
-  Soft (post-run):
-    evaluate_risk() — checks backtest results against target thresholds.
-    Violations do NOT crash the run, but a strategy that fails soft targets
-    MUST be marked status='discard'. It cannot be marked keep=True.
+Responsibilities:
+  - Hard leverage limit (pre-run): raises ValueError if MAX_LEVERAGE exceeds
+    MAX_LEVERAGE_LIMIT, blocking the backtest entirely.
+  - Soft drawdown target (post-run): checks whether Max. Drawdown breaches
+    the safety floor. Failure means the strategy is unsafe — log as 'discard'
+    and do NOT mark keep=True.
+  - Invalid result detection: catches strategies that fired zero trades or
+    produced NaN metrics (treated as a crash-level failure).
 
 Configurable via .env:
-    MAX_DRAWDOWN_LIMIT   e.g. -20  (soft target, negative %)
-    MIN_PROFIT_FACTOR    e.g. 1.5  (soft target)
-    MAX_LEVERAGE_LIMIT   e.g. 5.0  (hard limit)
+    MAX_DRAWDOWN_LIMIT   e.g. -20  (soft safety floor, negative %)
+    MAX_LEVERAGE_LIMIT   e.g. 5.0  (hard pre-run limit)
+
+For profit optimization targets (MIN_PROFIT_FACTOR, MIN_RETURN_PCT) see
+src/profit.py.
 """
 
 from __future__ import annotations
 
+import math
 import pandas as pd
 
 from src.prepare import Settings
@@ -33,16 +34,9 @@ def check_leverage_hard(leverage: float, settings: Settings) -> None:
     """
     Enforce the hard leverage ceiling.
 
-    Raises ValueError if `leverage` exceeds `settings.max_leverage_limit`.
+    Raises ValueError if leverage exceeds settings.max_leverage_limit.
     The caller must NOT proceed to run the backtest; instead, lower
     MAX_LEVERAGE in train.py and re-run.
-
-    Args:
-        leverage: The MAX_LEVERAGE value set in train.py.
-        settings: Loaded settings (contains max_leverage_limit from .env).
-
-    Raises:
-        ValueError: If leverage > max_leverage_limit.
     """
     limit = settings.max_leverage_limit
     if leverage > limit:
@@ -54,82 +48,96 @@ def check_leverage_hard(leverage: float, settings: Settings) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Soft evaluation — runs AFTER the backtest
+# Soft check — runs AFTER the backtest
 # ---------------------------------------------------------------------------
+
+def _is_invalid(value: float) -> bool:
+    """Return True if a metric is nan or inf."""
+    return math.isnan(value) or math.isinf(value)
+
 
 def evaluate_risk(stats: pd.Series, settings: Settings) -> dict:
     """
-    Evaluate backtest results against soft risk targets.
+    Evaluate backtest results against risk control thresholds.
 
-    Soft targets are guidelines, not hard walls. A strategy that fails one or
-    more targets must be logged as status='discard' and CANNOT be marked
-    keep=True in the strategy file.
+    Checks (in order):
+    1. Invalid result — zero trades or NaN key metrics → violations=['no_trades']
+    2. Max drawdown safety floor — drawdown worse than MAX_DRAWDOWN_LIMIT
 
-    Args:
-        stats:    The pd.Series returned by backtesting.py Backtest.run().
-        settings: Loaded settings (contains soft target thresholds from .env).
+    A strategy that fails any check MUST be logged as status='discard' and
+    CANNOT be marked keep=True.
 
     Returns:
         dict with keys:
-            passed (bool):       True if ALL soft targets are met.
-            violations (list):   Names of failed targets, empty if passed.
-            details (dict):      Per-metric pass/fail breakdown with values.
+            passed (bool):     True only if all risk checks pass.
+            invalid (bool):    True if the strategy produced no usable result.
+            violations (list): Human-readable failure descriptions.
+            details (dict):    Per-metric breakdown.
     """
-    max_drawdown_pct = float(stats.get("Max. Drawdown [%]", 0.0))
-    profit_factor    = float(stats.get("Profit Factor", 0.0) or 0.0)
-    sharpe           = float(stats.get("Sharpe Ratio", 0.0) or 0.0)
+    num_trades        = int(stats.get("# Trades", 0) or 0)
+    max_drawdown_pct  = float(stats.get("Max. Drawdown [%]", 0.0) or 0.0)
+    profit_factor_raw = stats.get("Profit Factor", None)
+    profit_factor     = float(profit_factor_raw) if profit_factor_raw is not None else float("nan")
 
-    drawdown_ok      = max_drawdown_pct >= settings.max_drawdown_limit
-    profit_factor_ok = profit_factor >= settings.min_profit_factor
+    # --- Invalid / degenerate result ---
+    if num_trades == 0 or _is_invalid(profit_factor):
+        return {
+            "passed":     False,
+            "invalid":    True,
+            "violations": [
+                f"strategy produced {num_trades} trades — "
+                f"no signals fired or entry conditions never met"
+            ],
+            "details": {
+                "num_trades":         num_trades,
+                "max_drawdown_pct":   max_drawdown_pct,
+                "max_drawdown_limit": settings.max_drawdown_limit,
+                "max_drawdown_ok":    False,
+            },
+        }
 
+    # --- Drawdown safety floor ---
+    drawdown_ok = max_drawdown_pct >= settings.max_drawdown_limit
     violations: list[str] = []
     if not drawdown_ok:
-        violations.append("max_drawdown")
-    if not profit_factor_ok:
-        violations.append("profit_factor")
+        violations.append(
+            f"max drawdown {max_drawdown_pct:.1f}% breached safety floor "
+            f"{settings.max_drawdown_limit}%"
+        )
 
     return {
         "passed":     len(violations) == 0,
+        "invalid":    False,
         "violations": violations,
         "details": {
-            "max_drawdown_pct":       max_drawdown_pct,
-            "max_drawdown_limit":     settings.max_drawdown_limit,
-            "max_drawdown_ok":        drawdown_ok,
-            "profit_factor":          profit_factor,
-            "min_profit_factor":      settings.min_profit_factor,
-            "profit_factor_ok":       profit_factor_ok,
-            # Sharpe is informational only — not a configurable target
-            "sharpe":                 sharpe,
+            "num_trades":         num_trades,
+            "max_drawdown_pct":   max_drawdown_pct,
+            "max_drawdown_limit": settings.max_drawdown_limit,
+            "max_drawdown_ok":    drawdown_ok,
         },
     }
 
 
 def format_risk_summary(risk: dict) -> str:
     """
-    Return a human-readable one-line risk summary for printing after a run.
+    One-line risk summary for printing after a run.
 
-    Example output (passed):
-        risk_passed:      True   | max_drawdown: -8.5% ✓  profit_factor: 2.95 ✓  sharpe: 1.86
-    Example output (failed):
-        risk_passed:      False  | max_drawdown: -35.2% ✗ (limit -20%)  profit_factor: 0.8 ✗ (min 1.5)  sharpe: 0.42
+    Examples:
+        risk_passed:  True  | max_drawdown: -8.5% ✓
+        risk_passed:  False | max_drawdown: -35.2% ✗ (floor -20.0%)
+        risk_passed:  False | INVALID — strategy produced 0 trades
     """
-    d = risk["details"]
+    if risk.get("invalid"):
+        num = risk["details"].get("num_trades", 0)
+        return (
+            f"risk_passed:  False | INVALID — strategy produced {num} trades "
+            f"(no signals fired or all metrics are NaN)"
+        )
+
+    d      = risk["details"]
     passed = risk["passed"]
-
-    def dd_str() -> str:
-        val = d["max_drawdown_pct"]
-        ok  = d["max_drawdown_ok"]
-        mark = "✓" if ok else f"✗ (limit {d['max_drawdown_limit']}%)"
-        return f"max_drawdown: {val:.1f}% {mark}"
-
-    def pf_str() -> str:
-        val = d["profit_factor"]
-        ok  = d["profit_factor_ok"]
-        mark = "✓" if ok else f"✗ (min {d['min_profit_factor']})"
-        return f"profit_factor: {val:.2f} {mark}"
-
-    def sr_str() -> str:
-        return f"sharpe: {d['sharpe']:.2f}"
-
+    val    = d["max_drawdown_pct"]
+    ok     = d["max_drawdown_ok"]
+    mark   = "✓" if ok else f"✗ (floor {d['max_drawdown_limit']}%)"
     status = "True " if passed else "False"
-    return f"risk_passed:      {status} | {dd_str()}  {pf_str()}  {sr_str()}"
+    return f"risk_passed:  {status} | max_drawdown: {val:.1f}% {mark}"

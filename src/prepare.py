@@ -34,10 +34,15 @@ class Settings:
     timeframe: str
     start: str
     end: str | None
-    # Risk management
-    max_drawdown_limit: float  # soft target: max drawdown % (negative, e.g. -20.0)
-    min_profit_factor: float   # soft target: minimum profit factor (e.g. 1.5)
-    max_leverage_limit: float  # hard limit: max allowed leverage (e.g. 5.0)
+    # Risk control (safety floors)
+    max_drawdown_limit: float  # soft: max drawdown must stay above this % (e.g. -20.0)
+    max_leverage_limit: float  # hard: max allowed leverage (e.g. 5.0)
+    # Profit optimization — Layer 1: statistical validity
+    min_num_trades: int        # minimum trade count for statistical reliability (e.g. 30)
+    min_exposure_pct: float    # minimum % of time in a position (e.g. 5.0)
+    # Profit optimization — Layer 2: risk-adjusted return
+    min_sharpe_ratio: float    # minimum Sharpe Ratio (e.g. 1.0)
+    min_calmar_ratio: float    # minimum Calmar Ratio = Ann.Return / MaxDrawdown (e.g. 1.0)
 
 
 def prepare_settings() -> Settings:
@@ -50,9 +55,15 @@ def prepare_settings() -> Settings:
         timeframe=os.getenv("TIMEFRAME", "1h"),
         start=os.getenv("START_DATE", "2023-01-01"),
         end=os.getenv("END_DATE") or None,
+        # Risk control
         max_drawdown_limit=float(os.getenv("MAX_DRAWDOWN_LIMIT", "-10")),
-        min_profit_factor=float(os.getenv("MIN_PROFIT_FACTOR", "1.5")),
         max_leverage_limit=float(os.getenv("MAX_LEVERAGE_LIMIT", "3.0")),
+        # Profit optimization — Layer 1: statistical validity
+        min_num_trades=int(os.getenv("MIN_NUM_TRADES", "30")),
+        min_exposure_pct=float(os.getenv("MIN_EXPOSURE_PCT", "5.0")),
+        # Profit optimization — Layer 2: risk-adjusted return
+        min_sharpe_ratio=float(os.getenv("MIN_SHARPE_RATIO", "1.0")),
+        min_calmar_ratio=float(os.getenv("MIN_CALMAR_RATIO", "1.0")),
     )
 
 

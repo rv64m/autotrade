@@ -17,15 +17,16 @@ warnings.filterwarnings("ignore", message=".*insufficient margin.*", module="bac
 from src.prepare import load_ohlcv_data, prepare_settings
 from src.strategies.loader import load_strategy
 from src.risk import check_leverage_hard, evaluate_risk, format_risk_summary
+from src.profit import evaluate_profit, format_profit_summary
 
 # ---------------------------------------------------------------------------
 # Hyperparameters (LLM modifies these)
 # ---------------------------------------------------------------------------
 
-STRATEGY_FILE = ""   # filename inside src/strategies/generated/
-TIMEFRAME = "4h"       # candle interval: "1m", "5m", "15m", "1h", "4h", "1d", etc.
-MAX_LEVERAGE = 1.0     # 1.0 = no leverage (spot); >1 for swap, e.g. 5.0 = 5x
-SYMBOL = "BTC/USDT"    # "BTC/USDT", "PAXG/USDT", etc.
+STRATEGY_FILE = "paxg_ichimoku_1h.py"   # filename inside src/strategies/generated/
+TIMEFRAME = "1h"       # candle interval: "1m", "5m", "15m", "1h", "4h", "1d", etc.
+MAX_LEVERAGE = 1.4     # 1.0 = no leverage (spot); >1 for swap, e.g. 5.0 = 5x
+SYMBOL = "PAXG/USDT"    # "BTC/USDT", "PAXG/USDT", etc.
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +75,11 @@ if __name__ == "__main__":
     data, backtest, stats, settings = run_backtest()
     elapsed = time.time() - t0
 
-    # Risk evaluation (soft targets)
+    # --- Risk control (safety floors) ---
     risk = evaluate_risk(stats, settings)
+
+    # --- Profit optimization targets (only meaningful if risk passed) ---
+    profit = evaluate_profit(stats, settings) if (not risk["invalid"]) else None
 
     # Drop internal backtesting fields (prefixed with _)
     public_stats = stats[~stats.index.str.startswith("_")]
@@ -87,9 +91,20 @@ if __name__ == "__main__":
     print(public_stats.to_string())
     print()
     print(format_risk_summary(risk))
-    if not risk["passed"]:
-        print(f"[RISK] Soft targets missed: {risk['violations']}")
-        print(f"[RISK] This strategy CANNOT be marked keep=True. Log as status='discard'.")
+    if profit is not None:
+        print(format_profit_summary(profit))
+
+    # --- Keep / discard verdict ---
+    if risk["invalid"]:
+        print("[VERDICT] CRASH — log as status='crash', move to .trash/strategies/")
+    elif not risk["passed"]:
+        print(f"[VERDICT] DISCARD (risk) — {risk['violations']}")
+        print("[VERDICT] Cannot mark keep=True. Log as status='discard'.")
+    elif profit is not None and not profit["passed"]:
+        print(f"[VERDICT] DISCARD (profit) — {profit['violations']}")
+        print("[VERDICT] Cannot mark keep=True. Log as status='discard'.")
+    else:
+        print("[VERDICT] ELIGIBLE — risk and profit targets met. Judge return quality and decide keep/discard.")
 
     if args.plot:
         backtest.plot()

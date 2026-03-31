@@ -207,7 +207,10 @@ marimo/_lsp/
 __marimo__/
 
 # Trainning data and results
-.data
-.trash
+.data/
+.trash/
 *.html
 results.jsonl
+src/strategies/generated/
+data/
+trash/

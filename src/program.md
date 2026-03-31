@@ -9,16 +9,20 @@ Autonomous trading strategy research. The LLM iterates over strategies to optimi
    - `src/train.py` — the file you modify: `STRATEGY_FILE`, `TIMEFRAME`, `MAX_LEVERAGE`.
    - `src/strategies/base.py` — fixed: `BaseStrategy` base class. Do not modify.
    - `src/strategies/loader.py` — fixed: strategy loader. Do not modify.
-   - `src/reference/risk.md` — **read this**: risk rules, gate logic, and `keep` eligibility criteria.
+   - `src/reference/risk.md` — **read this**: risk control rules (drawdown floor, leverage limit).
+   - `src/reference/profit.md` — **read this**: profit optimization targets and `keep` eligibility criteria.
 2. **Verify data**: Run `uv run python -m src.train`. It will fail if `STRATEGY_FILE` is empty — that's expected before the first strategy is written.
-3. **Initialize results.jsonl**: Create `./results.jsonl` as an empty file.
+3. **Initialize results.jsonl**: Create `results.jsonl` as an empty file.
 4. **Confirm and go**: Confirm setup looks good, then kick off the loop.
 
 ## Optimization Goals
 
-The goal is **not just maximizing return** — a strategy must balance return, drawdown, and profit factor.
+Every iteration runs two independent checks — **both must pass** before a strategy can be marked `keep=True`:
 
-See **[`src/reference/risk.md`](reference/risk.md)** for the full risk management rules: metric definitions, the two-stage risk gate (hard leverage limit + soft targets), configuration, and the decision criteria for `keep`.
+- **Risk control** — safety floors (max drawdown, leverage). See [`src/reference/risk.md`](reference/risk.md).
+- **Profit optimization** — performance targets (profit factor, return %). See [`src/reference/profit.md`](reference/profit.md).
+
+See both reference files for metric definitions, configuration, and the full decision table.
 
 ## Strategies
 
@@ -128,7 +132,7 @@ grep "^strategy:\|^Return\|^Sharpe\|^Max. Drawdown\|^Profit Factor\|^# Trades" r
 
 ## Logging results
 
-Log every experiment to `src/results.jsonl` (JSON Lines — one JSON object per line).
+Log every experiment to `results.jsonl` (JSON Lines — one JSON object per line).
 
 ```json
 {
@@ -208,15 +212,16 @@ LOOP FOREVER:
 2. Set `STRATEGY_FILE`, `TIMEFRAME`, and `MAX_LEVERAGE` in `src/train.py`.
    - **MAX_LEVERAGE must not exceed `MAX_LEVERAGE_LIMIT`** (from `.env`). If it does, `train.py` will raise an error — lower it and re-set before running.
 3. Run: `uv run python -m src.train > run.log 2>&1`
-4. Read results: `grep "^strategy:\|^Return\|^Sharpe\|^Max. Drawdown\|^Profit Factor\|^# Trades\|^risk_passed" run.log`
+4. Read results: `grep "^strategy:\|^Return\|^Sharpe\|^Max. Drawdown\|^Profit Factor\|^# Trades\|^risk_passed\|^profit_passed\|^\[VERDICT\]" run.log`
 5. If grep is empty → crashed. Run `tail -n 50 run.log` to read the error. Fix simple bugs and re-run. If the idea is broken, log as `crash` and move the file to `.trash/strategies/`.
 6. Log the result to `results.jsonl`.
-7. **Risk check — do this every single iteration, no exceptions**:
-   - Read the `risk_passed` line at the bottom of `run.log`.
-   - `risk_passed: True` → strategy is eligible for `keep`. Proceed to step 8.
-   - `risk_passed: False` → **MUST discard immediately**. Do NOT mark `keep = True`. Record which targets failed (`max_drawdown`, `profit_factor`) in `thoughts`, log as `status='discard'`, and move the file to `.trash/strategies/`. Then start the next iteration.
-8. **Finalize the strategy** (only reached if risk passed):
-   - If return improves on the current best: set `keep = True` in the strategy file.
+7. **Read the `[VERDICT]` line — do this every iteration, no exceptions**:
+   - `ELIGIBLE` → both risk and profit checks passed. Proceed to step 8.
+   - `DISCARD (risk)` → safety floor breached. Log `status='discard'`, record violation in `thoughts`. Start next iteration.
+   - `DISCARD (profit)` → profit targets not met. Log `status='discard'`, record which targets missed. Start next iteration.
+   - `CRASH` → zero trades or NaN metrics. Log `status='crash'`, move file to `.trash/strategies/`. Start next iteration.
+8. **Finalize the strategy** (only reached when `ELIGIBLE`):
+   - If return quality improves on the current best keeper: set `keep = True` in the strategy file.
    - Otherwise: log as `status='discard'` and move to `.trash/strategies/`.
 
 **NEVER STOP**: Once the loop begins, do NOT pause to ask the human if you should continue. The human may be away. You are autonomous. If you run out of ideas, think harder. The loop runs until the human interrupts you.
