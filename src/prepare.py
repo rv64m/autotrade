@@ -34,6 +34,10 @@ class Settings:
     timeframe: str
     start: str
     end: str | None
+    # Risk management
+    max_drawdown_limit: float  # soft target: max drawdown % (negative, e.g. -20.0)
+    min_profit_factor: float   # soft target: minimum profit factor (e.g. 1.5)
+    max_leverage_limit: float  # hard limit: max allowed leverage (e.g. 5.0)
 
 
 def prepare_settings() -> Settings:
@@ -46,6 +50,9 @@ def prepare_settings() -> Settings:
         timeframe=os.getenv("TIMEFRAME", "1h"),
         start=os.getenv("START_DATE", "2023-01-01"),
         end=os.getenv("END_DATE") or None,
+        max_drawdown_limit=float(os.getenv("MAX_DRAWDOWN_LIMIT", "-10")),
+        min_profit_factor=float(os.getenv("MIN_PROFIT_FACTOR", "1.5")),
+        max_leverage_limit=float(os.getenv("MAX_LEVERAGE_LIMIT", "3.0")),
     )
 
 
@@ -77,6 +84,7 @@ def evaluate_strategy(stats: pd.Series) -> dict:
         "return_pct": float(stats.get("Return [%]", 0.0)),
         "sharpe": float(stats.get("Sharpe Ratio", 0.0) or 0.0),
         "max_drawdown_pct": float(stats.get("Max. Drawdown [%]", 0.0)),
+        "profit_factor": float(stats.get("Profit Factor", 0.0) or 0.0),
         "num_trades": int(stats.get("# Trades", 0)),
         "win_rate_pct": float(stats.get("Win Rate [%]", 0.0) or 0.0),
     }

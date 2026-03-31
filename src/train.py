@@ -16,14 +16,16 @@ warnings.filterwarnings("ignore", message=".*insufficient margin.*", module="bac
 
 from src.prepare import load_ohlcv_data, prepare_settings
 from src.strategies.loader import load_strategy
+from src.risk import check_leverage_hard, evaluate_risk, format_risk_summary
 
 # ---------------------------------------------------------------------------
 # Hyperparameters (LLM modifies these)
 # ---------------------------------------------------------------------------
 
-STRATEGY_FILE = "paxg_donchian_fibo_regime_4h.py"   # filename inside src/strategies/generated/
+STRATEGY_FILE = ""   # filename inside src/strategies/generated/
 TIMEFRAME = "4h"       # candle interval: "1m", "5m", "15m", "1h", "4h", "1d", etc.
 MAX_LEVERAGE = 1.0     # 1.0 = no leverage (spot); >1 for swap, e.g. 5.0 = 5x
+SYMBOL = "BTC/USDT"    # "BTC/USDT", "PAXG/USDT", etc.
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +38,11 @@ def run_backtest() -> tuple[pd.DataFrame, Backtest, pd.Series, any]:
 
     settings = prepare_settings()
     settings.timeframe = TIMEFRAME
+    settings.symbol = SYMBOL
+
+    # Hard check: reject before running if leverage ceiling is exceeded.
+    # If this raises, lower MAX_LEVERAGE in train.py and re-run.
+    check_leverage_hard(MAX_LEVERAGE, settings)
 
     data = load_ohlcv_data(settings)
     strategy_cls = load_strategy(STRATEGY_FILE)
@@ -67,6 +74,9 @@ if __name__ == "__main__":
     data, backtest, stats, settings = run_backtest()
     elapsed = time.time() - t0
 
+    # Risk evaluation (soft targets)
+    risk = evaluate_risk(stats, settings)
+
     # Drop internal backtesting fields (prefixed with _)
     public_stats = stats[~stats.index.str.startswith("_")]
     print(f"strategy:         {STRATEGY_FILE}")
@@ -75,6 +85,11 @@ if __name__ == "__main__":
     print(f"max_leverage:     {MAX_LEVERAGE}")
     print(f"elapsed_seconds:  {elapsed:.1f}")
     print(public_stats.to_string())
+    print()
+    print(format_risk_summary(risk))
+    if not risk["passed"]:
+        print(f"[RISK] Soft targets missed: {risk['violations']}")
+        print(f"[RISK] This strategy CANNOT be marked keep=True. Log as status='discard'.")
 
     if args.plot:
         backtest.plot()

@@ -9,27 +9,16 @@ Autonomous trading strategy research. The LLM iterates over strategies to optimi
    - `src/train.py` — the file you modify: `STRATEGY_FILE`, `TIMEFRAME`, `MAX_LEVERAGE`.
    - `src/strategies/base.py` — fixed: `BaseStrategy` base class. Do not modify.
    - `src/strategies/loader.py` — fixed: strategy loader. Do not modify.
+   - `src/reference/risk.md` — **read this**: risk rules, gate logic, and `keep` eligibility criteria.
 2. **Verify data**: Run `uv run python -m src.train`. It will fail if `STRATEGY_FILE` is empty — that's expected before the first strategy is written.
 3. **Initialize results.jsonl**: Create `./results.jsonl` as an empty file.
 4. **Confirm and go**: Confirm setup looks good, then kick off the loop.
 
 ## Optimization Goals
 
-The goal is **not just maximizing return** — a strategy must balance multiple objectives:
+The goal is **not just maximizing return** — a strategy must balance return, drawdown, and profit factor.
 
-| Metric | Goal | Guideline |
-|--------|------|-----------|
-| **Return [%]** | Maximize | Primary profit metric |
-| **Max. Drawdown [%]** | Minimize (less negative) | Aim to stay above `MAX_DRAWDOWN_LIMIT` (configured in `.env`) |
-| **Profit Factor** | Maximize (>1.5 good, >2 excellent) | Strive to exceed `MIN_PROFIT_FACTOR` (configured in `.env`) |
-| **Sharpe Ratio** | Maximize (>1 acceptable, >2 good) | No hard limit, but higher is better |
-
-### Decision criteria
-
-A strategy is a **keeper** if it improves on the current best in a balanced way:
-- Higher `Return [%]` with similar or better drawdown
-- Similar return but significantly lower `Max. Drawdown [%]`
-- Better `Profit Factor` without sacrificing return
+See **[`src/reference/risk.md`](reference/risk.md)** for the full risk management rules: metric definitions, the two-stage risk gate (hard leverage limit + soft targets), configuration, and the decision criteria for `keep`.
 
 ## Strategies
 
@@ -166,7 +155,7 @@ Log every experiment to `src/results.jsonl` (JSON Lines — one JSON object per 
 
 **DO NOT** get stuck iterating on a single strategy. Explore broadly first, then optimize the best performers.
 
-### 1. Try different strategy types
+### 1. Try different strategy
 
 Create a **new strategy file** for each fundamentally different approach. Don't just tweak parameters on one idea.
 
@@ -217,20 +206,18 @@ LOOP FOREVER:
 
 1. Write a new strategy file to `src/strategies/generated/<name>.py`.
 2. Set `STRATEGY_FILE`, `TIMEFRAME`, and `MAX_LEVERAGE` in `src/train.py`.
+   - **MAX_LEVERAGE must not exceed `MAX_LEVERAGE_LIMIT`** (from `.env`). If it does, `train.py` will raise an error — lower it and re-set before running.
 3. Run: `uv run python -m src.train > run.log 2>&1`
-4. Read results: `grep "^strategy:\|^Return\|^Sharpe\|^Max. Drawdown\|^Profit Factor\|^# Trades" run.log`
+4. Read results: `grep "^strategy:\|^Return\|^Sharpe\|^Max. Drawdown\|^Profit Factor\|^# Trades\|^risk_passed" run.log`
 5. If grep is empty → crashed. Run `tail -n 50 run.log` to read the error. Fix simple bugs and re-run. If the idea is broken, log as `crash` and move the file to `.trash/strategies/`.
-6. Log the result to `src/results.jsonl`.
-7. **Evaluate against goals** (guidelines in `.env`):
-   - Prefer strategies where `Max. Drawdown [%]` ≥ `MAX_DRAWDOWN_LIMIT` and `Profit Factor` ≥ `MIN_PROFIT_FACTOR`
-   - Keep if: improves `Return [%]` without worsening drawdown, OR reduces drawdown significantly, OR improves `Profit Factor` meaningfully
-8. If keeper: set `keep = True` in the strategy file.
-9. If discard: move the strategy file to `.trash/strategies/`.
-
-To move a discarded strategy:
-```bash
-mkdir -p .trash/strategies && mv src/strategies/generated/<name>.py .trash/strategies/
-```
+6. Log the result to `results.jsonl`.
+7. **Risk check — do this every single iteration, no exceptions**:
+   - Read the `risk_passed` line at the bottom of `run.log`.
+   - `risk_passed: True` → strategy is eligible for `keep`. Proceed to step 8.
+   - `risk_passed: False` → **MUST discard immediately**. Do NOT mark `keep = True`. Record which targets failed (`max_drawdown`, `profit_factor`) in `thoughts`, log as `status='discard'`, and move the file to `.trash/strategies/`. Then start the next iteration.
+8. **Finalize the strategy** (only reached if risk passed):
+   - If return improves on the current best: set `keep = True` in the strategy file.
+   - Otherwise: log as `status='discard'` and move to `.trash/strategies/`.
 
 **NEVER STOP**: Once the loop begins, do NOT pause to ask the human if you should continue. The human may be away. You are autonomous. If you run out of ideas, think harder. The loop runs until the human interrupts you.
 
