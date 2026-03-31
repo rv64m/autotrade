@@ -11,7 +11,7 @@ Autonomous trading strategy research. The LLM iterates over strategies to optimi
    - `src/strategies/loader.py` — fixed: strategy loader. Do not modify.
    - `src/reference/risk.md` — **read this**: risk control rules (drawdown floor, leverage limit).
    - `src/reference/profit.md` — **read this**: profit optimization targets and `keep` eligibility criteria.
-2. **Verify data**: Run `uv run python -m src.train`. It will fail if `STRATEGY_FILE` is empty — that's expected before the first strategy is written.
+2. **Verify data**: Run `uv run python -m src.train --strategy <name>.py`. It will fail if `--strategy` is missing — that's expected before the first strategy is written.
 3. **Initialize results.jsonl**: Create `results.jsonl` as an empty file.
 4. **Confirm and go**: Confirm setup looks good, then kick off the loop.
 
@@ -73,11 +73,15 @@ class EmaCrossoverRsi(BaseStrategy):
 
 For swap markets, use leverage via position sizing: `self.buy(size=0.5)` for 50% of equity.
 
-### Pointing train.py at the strategy
+### Running a strategy
 
-In `src/train.py`, set:
+Run with `--strategy` pointing to the filename inside `src/strategies/generated/`:
+```bash
+uv run python -m src.train --strategy ema_crossover_rsi_4h.py
+```
+
+To also tune timeframe and leverage, edit `TIMEFRAME` and `MAX_LEVERAGE` in `src/train.py`:
 ```python
-STRATEGY_FILE = "ema_crossover_rsi_4h.py"
 TIMEFRAME = "4h"
 MAX_LEVERAGE = 1.0  # or e.g. 5.0 for 5x leverage on swap
 ```
@@ -209,9 +213,9 @@ Benefits of scaling:
 LOOP FOREVER:
 
 1. Write a new strategy file to `src/strategies/generated/<name>.py`.
-2. Set `STRATEGY_FILE`, `TIMEFRAME`, and `MAX_LEVERAGE` in `src/train.py`.
-   - **MAX_LEVERAGE must not exceed `MAX_LEVERAGE_LIMIT`** (from `.env`). If it does, `train.py` will raise an error — lower it and re-set before running.
-3. Run: `uv run python -m src.train > run.log 2>&1`
+2. Adjust `TIMEFRAME` and `MAX_LEVERAGE` in `src/train.py` if needed.
+   - **MAX_LEVERAGE must not exceed `MAX_LEVERAGE_LIMIT`** (from `.env`). If it does, `train.py` will raise an error — lower it before running.
+3. Run: `uv run python -m src.train --strategy <name>.py > run.log 2>&1`
 4. Read results: `grep "^strategy:\|^Return\|^Sharpe\|^Max. Drawdown\|^Profit Factor\|^# Trades\|^risk_passed\|^profit_passed\|^\[VERDICT\]" run.log`
 5. If grep is empty → crashed. Run `tail -n 50 run.log` to read the error. Fix simple bugs and re-run. If the idea is broken, log as `crash` and move the file to `.trash/strategies/`.
 6. Log the result to `results.jsonl`.

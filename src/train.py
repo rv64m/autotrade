@@ -1,9 +1,9 @@
 """
 Autotrade experiment runner. The LLM modifies this file.
-Usage: uv run python -m src.train
+Usage: uv run python -m src.train --strategy <filename>
 
 The LLM writes a new strategy to src/strategies/generated/<name>.py,
-then sets STRATEGY_FILE below to point to it.
+then runs this script with --strategy <filename>.
 """
 
 import warnings
@@ -23,30 +23,27 @@ from src.profit import evaluate_profit, format_profit_summary
 # Hyperparameters (LLM modifies these)
 # ---------------------------------------------------------------------------
 
-STRATEGY_FILE = "paxg_ichimoku_1h.py"   # filename inside src/strategies/generated/
 TIMEFRAME = "1h"       # candle interval: "1m", "5m", "15m", "1h", "4h", "1d", etc.
-MAX_LEVERAGE = 1.4     # 1.0 = no leverage (spot); >1 for swap, e.g. 5.0 = 5x
-SYMBOL = "PAXG/USDT"    # "BTC/USDT", "PAXG/USDT", etc.
+MAX_LEVERAGE = 1.0     # 1.0 = no leverage (spot); >1 for swap, e.g. 5.0 = 5x
 
 
 # ---------------------------------------------------------------------------
 # Backtest runner (do not modify)
 # ---------------------------------------------------------------------------
 
-def run_backtest() -> tuple[pd.DataFrame, Backtest, pd.Series, any]:
-    if not STRATEGY_FILE:
-        raise ValueError("STRATEGY_FILE is not set. Point it to a file in src/strategies/generated/.")
+def run_backtest(strategy_file: str) -> tuple[pd.DataFrame, Backtest, pd.Series, any]:
+    if not strategy_file:
+        raise ValueError("No strategy specified. Use --strategy <filename>.")
 
     settings = prepare_settings()
     settings.timeframe = TIMEFRAME
-    settings.symbol = SYMBOL
 
     # Hard check: reject before running if leverage ceiling is exceeded.
     # If this raises, lower MAX_LEVERAGE in train.py and re-run.
     check_leverage_hard(MAX_LEVERAGE, settings)
 
     data = load_ohlcv_data(settings)
-    strategy_cls = load_strategy(STRATEGY_FILE)
+    strategy_cls = load_strategy(strategy_file)
 
     # margin = 1/leverage: 1.0 = no leverage (spot), 0.1 = up to 10x (swap)
     margin = 1.0 / MAX_LEVERAGE
@@ -68,11 +65,12 @@ if __name__ == "__main__":
     import time
 
     parser = argparse.ArgumentParser(description="Run backtest for a strategy")
+    parser.add_argument("--strategy", default="", help="Strategy filename inside src/strategies/generated/")
     parser.add_argument("--plot", action="store_true", help="Show interactive plot after backtest")
     args = parser.parse_args()
 
     t0 = time.time()
-    data, backtest, stats, settings = run_backtest()
+    data, backtest, stats, settings = run_backtest(strategy_file=args.strategy)
     elapsed = time.time() - t0
 
     # --- Risk control (safety floors) ---
@@ -83,7 +81,7 @@ if __name__ == "__main__":
 
     # Drop internal backtesting fields (prefixed with _)
     public_stats = stats[~stats.index.str.startswith("_")]
-    print(f"strategy:         {STRATEGY_FILE}")
+    print(f"strategy:         {args.strategy}")
     print(f"symbol:           {settings.symbol}")
     print(f"timeframe:        {TIMEFRAME}")
     print(f"max_leverage:     {MAX_LEVERAGE}")
